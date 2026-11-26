@@ -3,7 +3,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { group } from '@/components/pane-shell/tree/model'
+import { group, split } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import {
   $parkedQueueSessions,
@@ -250,15 +250,18 @@ describe('ContribWiring background queue: independent remote owner', () => {
 })
 
 describe('ContribWiring session shortcuts', () => {
-  function withFocusedSessionTile(run: () => void) {
+  const focusTargets = ['chat', 'Terminal'] as const
+
+  function withFocusedSessionTile(focusTarget: (typeof focusTargets)[number], run: () => void) {
     const previousLayout = $layoutTree.get()
     const previousGroup = $activeTreeGroup.get()
     // The workspace still points at stored-foreground while the other chat is frontmost.
     const tile = 'session-tile:stored-remote'
     const chats = group(['workspace', tile], { active: tile })
-    $layoutTree.set(chats)
-    noteActiveTreeGroup(chats.id)
+    const terminal = group(['terminal'])
     try {
+      $layoutTree.set(split('row', [chats, terminal]))
+      noteActiveTreeGroup(chats.id)
       render(
         <MemoryRouter>
           <QueryClientProvider client={queryClient}>
@@ -266,6 +269,11 @@ describe('ContribWiring session shortcuts', () => {
           </QueryClientProvider>
         </MemoryRouter>
       )
+      if (focusTarget === 'Terminal') {
+        act(() => noteActiveTreeGroup(terminal.id))
+      }
+
+      expect($selectedStoredSessionId.get()).toBe('stored-foreground')
       run()
     } finally {
       cleanup()
@@ -274,19 +282,19 @@ describe('ContribWiring session shortcuts', () => {
     }
   }
 
-  it('archives the focused chat rather than the primary workspace chat', () => {
-    withFocusedSessionTile(() => {
+  it.each(focusTargets)('archives the last focused chat from %s', focusTarget => {
+    withFocusedSessionTile(focusTarget, () => {
       act(() => fixture.keybinds!.archiveSelectedSession())
 
       expect(fixture.archiveSession).toHaveBeenCalledExactlyOnceWith('stored-remote')
     })
   })
 
-  it('pins and unpins the focused chat while the primary chat stays selected', () => {
+  it.each(focusTargets)('pins and unpins the last focused chat from %s', focusTarget => {
     const previousPins = $pinnedSessionIds.get()
     try {
       $pinnedSessionIds.set([])
-      withFocusedSessionTile(() => {
+      withFocusedSessionTile(focusTarget, () => {
         act(() => fixture.keybinds!.toggleSelectedPin())
         expect($pinnedSessionIds.get()).toEqual(['stored-remote'])
 
