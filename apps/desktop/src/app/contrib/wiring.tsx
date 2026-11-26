@@ -90,6 +90,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
@@ -980,11 +981,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     sessions
   })
 
-  // Pin/unpin the selected session (statusbar keybind + chat header) — pinned
-  // on the durable lineage-root id so it survives auto-compression.
-  const toggleSelectedPin = useCallback(() => {
-    const sessionId = $selectedStoredSessionId.get()
-
+  // Keep pins on the durable lineage-root id so they survive auto-compression.
+  const toggleSessionPin = useCallback((sessionId: string | null) => {
     if (!sessionId) {
       return
     }
@@ -999,12 +997,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const toggleSelectedPin = useCallback(() => toggleSessionPin($selectedStoredSessionId.get()), [toggleSessionPin])
+
   // The tab-strip "+" and ⌘T share one action (see `openNewSessionTab`).
   const openNewSessionTab = useCallback(() => openNewSessionTabAction(openNewSessionTile), [openNewSessionTile])
 
-  // Archive the selected session (rebindable `session.archive` hotkey).
+  // Archive the focused chat (rebindable `session.archive` hotkey).
   const archiveSelectedSession = useCallback(() => {
-    const sessionId = $selectedStoredSessionId.get()
+    const sessionId = $focusedStoredSessionId.get()
 
     if (!sessionId) {
       return
@@ -1021,7 +1021,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     requestGateway,
     startFreshSession: startFreshSessionDraft,
     toggleCommandCenter,
-    toggleSelectedPin
+    toggleSelectedPin: () => toggleSessionPin($focusedStoredSessionId.get())
   })
 
   // Register the tab-strip "+" action (the generic renderer stays

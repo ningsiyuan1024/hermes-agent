@@ -3,6 +3,8 @@ import { act, cleanup, render } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { group } from '@/components/pane-shell/tree/model'
+import { $activeTreeGroup, $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -10,6 +12,7 @@ import {
   getQueuedPrompts
 } from '@/store/composer-queue'
 import { $activeConnectionId } from '@/store/connections'
+import { $pinnedSessionIds } from '@/store/layout'
 import {
   $activeSessionId,
   $connection,
@@ -21,6 +24,7 @@ import {
 import { clearAllSessionStates } from '@/store/session-states'
 import { makeSessionInfo } from '@/test/session-info'
 
+import type { KeybindRuntimeDeps } from '../hooks/use-keybinds'
 import type { SubmitTextOptions } from '../session/hooks/use-prompt-actions/utils'
 
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
@@ -30,6 +34,8 @@ import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 // dispatcher. Stub unrelated chrome/boot and the prompt/network boundaries;
 // this proves scheduling/routing, not a WebSocket or an LLM's execution.
 const fixture = vi.hoisted(() => ({
+  archiveSession: vi.fn(async (_id: string) => undefined),
+  keybinds: null as KeybindRuntimeDeps | null,
   ambientRequest: vi.fn(async () => {
     throw new Error('foreground must not receive background RPCs')
   }),
@@ -114,10 +120,16 @@ vi.mock('../session/hooks/use-message-stream', () => ({ useMessageStream: () => 
 vi.mock('../session/hooks/use-model-controls', () => ({ useModelControls: () => ({}) }))
 vi.mock('../session/hooks/use-preview-routing', () => ({ usePreviewRouting: () => ({}) }))
 vi.mock('../session/hooks/use-route-resume', () => ({ useRouteResume: () => ({}) }))
-vi.mock('../session/hooks/use-session-actions', () => ({ useSessionActions: () => ({}) }))
+vi.mock('../session/hooks/use-session-actions', () => ({
+  useSessionActions: () => ({ archiveSession: fixture.archiveSession })
+}))
 vi.mock('../session/hooks/use-session-list-actions', () => ({ useSessionListActions: () => ({}) }))
 vi.mock('../chat/hooks/use-composer-actions', () => ({ useComposerActions: () => ({}) }))
-vi.mock('../hooks/use-keybinds', () => ({ useKeybinds: () => ({}) }))
+vi.mock('../hooks/use-keybinds', () => ({
+  useKeybinds: (keybinds: KeybindRuntimeDeps) => {
+    fixture.keybinds = keybinds
+  }
+}))
 vi.mock('../hud/handoff', () => ({ useHudHandoff: () => ({}) }))
 vi.mock('../shell/hooks/use-overlay-routing', () => ({ useOverlayRouting: () => ({}) }))
 vi.mock('./hooks/use-background-sync', () => ({ useBackgroundSync: () => ({}) }))
@@ -186,6 +198,7 @@ afterEach(() => {
   $connection.set(null)
   $gatewayState.set('closed')
   fixture.requestGateway = null
+  fixture.keybinds = null
   vi.useRealTimers()
 })
 
@@ -233,5 +246,55 @@ describe('ContribWiring background queue: independent remote owner', () => {
       text: 'continue remotely'
     })
     expect(getQueuedPrompts('stored-remote')).toHaveLength(0)
+  })
+})
+
+describe('ContribWiring session shortcuts', () => {
+  function withFocusedSessionTile(run: () => void) {
+    const previousLayout = $layoutTree.get()
+    const previousGroup = $activeTreeGroup.get()
+    // The workspace still points at stored-foreground while the other chat is frontmost.
+    const tile = 'session-tile:stored-remote'
+    const chats = group(['workspace', tile], { active: tile })
+    $layoutTree.set(chats)
+    noteActiveTreeGroup(chats.id)
+    try {
+      render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <ContribWiring>{null}</ContribWiring>
+          </QueryClientProvider>
+        </MemoryRouter>
+      )
+      run()
+    } finally {
+      cleanup()
+      $layoutTree.set(previousLayout)
+      noteActiveTreeGroup(previousGroup)
+    }
+  }
+
+  it('archives the focused chat rather than the primary workspace chat', () => {
+    withFocusedSessionTile(() => {
+      act(() => fixture.keybinds!.archiveSelectedSession())
+
+      expect(fixture.archiveSession).toHaveBeenCalledExactlyOnceWith('stored-remote')
+    })
+  })
+
+  it('pins and unpins the focused chat while the primary chat stays selected', () => {
+    const previousPins = $pinnedSessionIds.get()
+    try {
+      $pinnedSessionIds.set([])
+      withFocusedSessionTile(() => {
+        act(() => fixture.keybinds!.toggleSelectedPin())
+        expect($pinnedSessionIds.get()).toEqual(['stored-remote'])
+
+        act(() => fixture.keybinds!.toggleSelectedPin())
+        expect($pinnedSessionIds.get()).toEqual([])
+      })
+    } finally {
+      $pinnedSessionIds.set(previousPins)
+    }
   })
 })
